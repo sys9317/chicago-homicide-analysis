@@ -1,0 +1,8 @@
+.env
+*.csv
+*.shp
+*.shx
+*.dbf
+*.prj
+.Rhistory
+.RData

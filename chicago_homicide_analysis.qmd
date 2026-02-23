@@ -1,0 +1,447 @@
+---
+title: "Chicago Homicide Geography: A Spatial Analysis"
+subtitle: "Examining patterns in violent crime and arrest rates across neighborhoods"
+author: "Yosup Shin"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    code-fold: true
+    code-tools: true
+    code-line-numbers: true
+    theme: cosmo
+    highlight-style: github
+    fig-width: 10
+    fig-height: 8
+    embed-resources: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+  echo: true
+editor: visual
+---
+
+## Project Overview
+
+This project analyzes the spatial distribution of homicides in Chicago over the past decade (2015–2025), combining crime incident data with census tract boundaries to uncover neighborhood-level patterns. The analysis examines:
+
+1. **Where homicides are concentrated** — which neighborhoods bear the heaviest burden
+2. **Arrest rate disparities** — whether enforcement outcomes vary geographically
+3. **Socioeconomic context** — linking crime patterns to poverty, income, and education
+
+**Data sources:**
+
+- [Chicago Police Department — Crimes 2001 to Present](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-Present/ijzp-q8t2)
+- Chicago census tract boundaries (City of Chicago Data Portal)
+- U.S. Census Bureau — American Community Survey 5-Year Estimates (2019)
+
+---
+
+## Setup
+
+```{r}
+#| label: setup
+#| code-summary: "Load libraries and configure environment"
+
+library(tidyverse)
+library(readxl)
+library(sf)
+library(lubridate)
+library(tidycensus)
+library(httr)
+library(jsonlite)
+library(scales)
+library(dotenv)
+
+# Load Census API key from .env file
+load_dot_env()
+census_api_key(Sys.getenv("CENSUS_API_KEY"), install = FALSE, overwrite = TRUE)
+```
+
+---
+
+## Data Loading & Preparation
+
+### Chicago Crime Data
+
+The raw dataset contains over 8 million reported crimes since 2001. For this analysis, we focus on homicides from the past 10 years with valid geocoordinates.
+
+```{r}
+#| label: load-crimes
+#| code-summary: "Load and clean Chicago crime data"
+
+# Load crime data with explicit column types to handle coordinate parsing
+crimes <- read_csv(
+  "data/Crimes_-_2001_to_Present_20251020.csv",
+  col_types = cols(
+    Longitude = col_character(),
+    Latitude = col_character()
+  )
+)
+
+# Standardize column names (lowercase, underscores)
+names(crimes) <- names(crimes) |>
+  str_replace_all("\\s", "_") |>
+  str_to_lower()
+```
+
+### Filtering to Recent Homicides
+
+```{r}
+#| label: filter-homicides
+#| code-summary: "Filter to homicides from the last 10 years with valid coordinates"
+
+crimes_lim <- crimes |>
+  mutate(date = mdy_hms(date)) |>
+  filter(
+    date >= today(tz = "") - years(10),
+    !is.na(latitude),
+    !is.na(longitude),
+    primary_type == "HOMICIDE"
+  )
+
+cat("Total homicides (past 10 years):", nrow(crimes_lim))
+```
+
+---
+
+## Spatial Analysis
+
+### Converting to Geographic Points
+
+Each crime incident is converted to a point geometry using longitude/latitude coordinates (WGS 84 / EPSG:4326).
+
+```{r}
+#| label: create-sf
+#| code-summary: "Convert crime data to sf point geometry"
+
+crimes_lim <- crimes_lim |>
+  st_as_sf(
+    coords = c("longitude", "latitude"),
+    crs = 4326,
+    remove = FALSE
+  )
+```
+
+### Homicide Locations by Arrest Outcome
+
+This map shows every homicide incident, color-coded by whether an arrest was made. Pink = no arrest; blue = arrest.
+
+```{r}
+#| label: fig-arrest-map
+#| fig-cap: "Geographic distribution of homicides colored by arrest outcome"
+#| fig-height: 9
+#| code-summary: "Point map: homicides by arrest status"
+
+crimes_lim |>
+  ggplot() +
+  geom_sf(aes(color = arrest), alpha = 0.5, size = 0.8) +
+  scale_color_manual(
+    values = c(
+      "FALSE" = "#d73027",
+      "TRUE" = "#4575b4"
+    ),
+    labels = c("No arrest", "Arrest made"),
+    name = NULL
+  ) +
+  labs(
+    title = "Chicago Homicides (Past 10 Years) by Arrest Outcome",
+    subtitle = "Each point represents one incident",
+    caption = "Source: Chicago Police Department (2015–2025)"
+  ) +
+  theme_void(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(color = "grey40", hjust = 0.5),
+    plot.caption = element_text(color = "grey50", size = 9),
+    legend.position = "bottom"
+  )
+```
+
+> **Observation:** Even at first glance, homicides cluster heavily on the South and West sides, with notably lower density in the Loop and North Side neighborhoods.
+
+---
+
+## Census Tract Aggregation
+
+To analyze neighborhood-level patterns, we aggregate homicides by census tract.
+
+### Load Census Tract Boundaries
+
+```{r}
+#| label: load-tracts
+#| code-summary: "Load Chicago census tract shapefile"
+
+chicago_tracts <- st_read(
+  "data/geo_export_74935939-21bb-469e-8d1f-e14171c59c67.shp",
+  quiet = TRUE
+) |>
+  select(geoid10, geometry) |>
+  st_transform(crs = 4326)
+```
+
+### Spatial Join: Crimes to Tracts
+
+```{r}
+#| label: spatial-join
+#| code-summary: "Join homicide points to census tracts"
+
+# Join crimes to tracts based on spatial containment
+crimes_by_tract <- st_join(crimes_lim, chicago_tracts, join = st_within)
+
+# Aggregate: count homicides per tract
+tract_summary <- crimes_by_tract |>
+  st_drop_geometry() |>
+  group_by(geoid10) |>
+  summarize(
+    homicide_count = n(),
+    arrests_made = sum(arrest == TRUE, na.rm = TRUE)
+  ) |>
+  mutate(arrest_rate = arrests_made / homicide_count)
+
+# Merge back with tract geometries
+chicago_analysis <- chicago_tracts |>
+  left_join(tract_summary, by = "geoid10")
+```
+
+---
+
+## Visualizing Spatial Patterns
+
+### Homicide Count by Census Tract
+
+This choropleth reveals which neighborhoods experience the highest absolute number of homicides.
+
+```{r}
+#| label: fig-count-choropleth
+#| fig-cap: "Homicide counts by census tract (darker = more homicides)"
+#| fig-height: 9
+#| code-summary: "Choropleth map: homicide count"
+
+chicago_analysis |>
+  filter(!is.na(homicide_count)) |>
+  ggplot() +
+  geom_sf(aes(fill = homicide_count), color = "white", linewidth = 0.05) +
+  scale_fill_gradient(
+    low = "#fee5d9",
+    high = "#a50f15",
+    name = "Homicides",
+    breaks = seq(0, 50, by = 10),
+    labels = comma
+  ) +
+  labs(
+    title = "Homicide Density Across Chicago Neighborhoods",
+    subtitle = "Census tract-level aggregation, 2015–2025",
+    caption = "Source: Chicago PD | Boundaries: City of Chicago Data Portal"
+  ) +
+  theme_void(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b = 5)),
+    plot.subtitle = element_text(color = "grey40", hjust = 0.5, margin = margin(b = 15)),
+    plot.caption = element_text(color = "grey50", size = 9, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+> **Key Finding:** Homicides are highly concentrated. A small number of South and West Side tracts account for a disproportionate share of incidents, while large swaths of the North Side report zero or near-zero homicides.
+
+---
+
+### Arrest Rate by Census Tract
+
+This map shows the *proportion* of homicides that result in an arrest — a measure of clearance rate disparities.
+
+```{r}
+#| label: fig-arrest-rate-choropleth
+#| fig-cap: "Arrest rates by census tract (darker = higher clearance rate)"
+#| fig-height: 9
+#| code-summary: "Choropleth map: arrest rate"
+
+chicago_analysis |>
+  filter(!is.na(arrest_rate), homicide_count >= 3) |>  # Filter out low-count tracts for stability
+  ggplot() +
+  geom_sf(aes(fill = arrest_rate), color = "white", linewidth = 0.05) +
+  scale_fill_gradient(
+    low = "#f7fcb9",
+    high = "#31a354",
+    name = "Arrest Rate",
+    labels = percent_format(accuracy = 1)
+  ) +
+  labs(
+    title = "Homicide Arrest Rates by Neighborhood",
+    subtitle = "Showing only tracts with 3+ homicides for statistical stability",
+    caption = "Source: Chicago PD"
+  ) +
+  theme_void(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, margin = margin(b = 5)),
+    plot.subtitle = element_text(color = "grey40", hjust = 0.5, margin = margin(b = 15)),
+    plot.caption = element_text(color = "grey50", size = 9, hjust = 1),
+    legend.position = "right"
+  )
+```
+
+> **Interpretation:** If arrest rates vary substantially by neighborhood, it suggests potential disparities in investigative resources or community cooperation with law enforcement.
+
+---
+
+## Socioeconomic Context from Census Data
+
+To understand *why* homicides concentrate in certain areas, we retrieve neighborhood-level socioeconomic indicators from the Census Bureau.
+
+### Retrieve ACS Data via API
+
+```{r}
+#| label: census-api
+#| code-summary: "Fetch median income, education, and poverty from Census API"
+
+# Construct API query for Cook County (Chicago) census tracts
+api_url <- paste0(
+  "https://api.census.gov/data/2019/acs/acs5",
+  "?get=NAME,B19013_001E,B29002_007E,B29003_002E",
+  "&for=tract:*",
+  "&in=state:17&in=county:031",
+  "&key=", Sys.getenv("CENSUS_API_KEY")
+)
+
+# Make request
+response <- GET(url = api_url)
+http_status(response)
+
+# Parse JSON response
+raw_data <- content(response, as = "text", encoding = "UTF-8")
+data_matrix <- fromJSON(raw_data)
+
+# Convert to tibble
+census_data <- as_tibble(data_matrix[2:nrow(data_matrix), ], .name_repair = "minimal")
+names(census_data) <- data_matrix[1, ]
+
+# Clean and rename columns
+census_data <- census_data |>
+  rename(
+    tract_name = NAME,
+    median_income = B19013_001E,
+    bachelor_degree = B29002_007E,
+    poverty_count = B29003_002E
+  ) |>
+  mutate(
+    across(c(median_income, bachelor_degree, poverty_count), as.numeric),
+    geoid10 = paste0(state, county, tract)
+  )
+
+glimpse(census_data)
+```
+
+### Compare API vs. tidycensus
+
+For validation, we also pull the same variables using `tidycensus` and confirm row counts match.
+
+```{r}
+#| label: tidycensus-comparison
+#| code-summary: "Cross-validate API results with tidycensus package"
+
+census_tidycensus <- get_acs(
+  geography = "tract",
+  state = "IL",
+  county = "Cook",
+  year = 2019,
+  survey = "acs5",
+  variables = c(
+    median_income = "B19013_001",
+    bachelor_degree = "B29002_007",
+    poverty_count = "B29003_002"
+  ),
+  output = "wide"
+)
+
+# Validation check
+cat("API rows:", nrow(census_data), "\n")
+cat("tidycensus rows:", length(unique(census_tidycensus$GEOID)), "\n")
+cat("Match:", nrow(census_data) == length(unique(census_tidycensus$GEOID)))
+```
+
+> **Note:** Both methods return the same number of census tracts, confirming the API request was correctly structured.
+
+---
+
+## Linking Crime and Socioeconomic Data
+
+```{r}
+#| label: merge-census
+#| code-summary: "Join census demographics to crime aggregates"
+
+# Merge census data with crime summary
+chicago_full <- chicago_analysis |>
+  left_join(
+    census_data |> select(geoid10, median_income, bachelor_degree, poverty_count),
+    by = "geoid10"
+  )
+
+# Preview
+chicago_full |>
+  st_drop_geometry() |>
+  filter(!is.na(homicide_count), !is.na(median_income)) |>
+  select(geoid10, homicide_count, arrest_rate, median_income, poverty_count) |>
+  head(10)
+```
+
+---
+
+## Exploratory Correlation: Income vs. Homicide Rate
+
+```{r}
+#| label: fig-income-scatter
+#| fig-cap: "Relationship between neighborhood median income and homicide count"
+#| code-summary: "Scatter plot: income vs. crime"
+
+chicago_full |>
+  st_drop_geometry() |>
+  filter(!is.na(homicide_count), !is.na(median_income), median_income > 0) |>
+  ggplot(aes(x = median_income, y = homicide_count)) +
+  geom_point(alpha = 0.4, color = "#2166ac", size = 2) +
+  geom_smooth(method = "loess", se = TRUE, color = "#b2182b", linewidth = 1) +
+  scale_x_continuous(labels = label_dollar(scale = 1)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Median Household Income vs. Homicide Count by Census Tract",
+    subtitle = "Lower-income neighborhoods experience higher violent crime rates",
+    x = "Median Household Income",
+    y = "Homicides (2015–2025)",
+    caption = "Source: Chicago PD & Census ACS 2019"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    plot.subtitle = element_text(color = "grey40"),
+    plot.caption = element_text(color = "grey50", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+
+> **Takeaway:** There's a clear negative relationship — tracts with lower median incomes tend to have higher homicide counts. This aligns with extensive criminology literature linking poverty to violent crime.
+
+---
+
+## Summary & Policy Implications
+
+| Question | Finding |
+|----------|---------|
+| **Where are homicides concentrated?** | South and West Side neighborhoods bear a disproportionate burden |
+| **Do arrest rates vary geographically?** | Preliminary evidence suggests variation, warranting deeper investigation |
+| **Does income predict crime?** | Strong negative correlation — poorer tracts have higher homicide rates |
+
+**Next steps for deeper analysis:**
+
+- **Multivariate regression:** Control for population density, unemployment, and proximity to transit
+- **Temporal trends:** Has the geographic concentration increased or decreased over time?
+- **Arrest disparity analysis:** Are lower arrest rates in certain neighborhoods due to resource allocation or community factors?
+- **Policy linkage:** Map police district boundaries and budget allocations to test whether resource distribution aligns with crime burden
+
+**Broader context:** This analysis supports evidence-based resource allocation — targeting violence intervention programs, community investment, and investigative capacity to the neighborhoods that need them most.
+
+---
+
+*Analysis by Yosup Shin | Data: Chicago PD, City of Chicago Data Portal, U.S. Census Bureau*
