@@ -2,7 +2,7 @@
 
 An exploratory spatial analysis examining the geographic distribution of homicides across Chicago neighborhoods over the past decade, with a focus on arrest rate disparities and socioeconomic correlates.
 
-📊 **[View the full analysis report](https://yourusername.github.io/chicago-homicide-analysis/)** <!-- replace with your GitHub Pages link once published -->
+📊 **[View the full analysis report](https://github.com/sys9317/chicago-homicide-analysis)** 
 
 ---
 
