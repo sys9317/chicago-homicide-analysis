@@ -2,7 +2,7 @@
 
 An exploratory spatial analysis examining the geographic distribution of homicides across Chicago neighborhoods over the past decade, with a focus on arrest rate disparities and socioeconomic correlates.
 
-📊 **[View the full analysis report](https://github.com/sys9317/chicago-homicide-analysis)** 
+The full analysis, prose and code, is in [`chicago_homicide_analysis.qmd`](chicago_homicide_analysis.qmd) (Quarto). The rendered HTML report is not committed; run `quarto render chicago_homicide_analysis.qmd` to build it.
 
 ---
 
@@ -31,14 +31,15 @@ The analysis uses geospatial techniques (spatial joins, choropleth mapping) and 
 ```
 chicago-homicide-analysis/
 ├── chicago_homicide_analysis.qmd   # Main analysis (Quarto)
-├── chicago_homicide_analysis.html  # Rendered report
-├── data/
-│   ├── README.md                   # Instructions for data acquisition
-│   ├── Crimes_-_2001_to_Present_*.csv  (gitignored)
-│   └── geo_export_*.shp            (gitignored)
-├── .env                            # Census API key (gitignored)
+├── data/                           # Raw data, not tracked (see "Download the data" below)
+│   ├── Crimes_-_2001_to_Present_*.csv
+│   └── geo_export_*.{shp,shx,dbf,prj,cpg}
+├── .env                            # Census API key, not tracked
+├── LICENSE
 └── README.md
 ```
+
+Run `quarto render` to produce `chicago_homicide_analysis.html`.
 
 ---
 
@@ -47,7 +48,7 @@ chicago-homicide-analysis/
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/yourusername/chicago-homicide-analysis.git
+git clone https://github.com/sys9317/chicago-homicide-analysis.git
 cd chicago-homicide-analysis
 ```
 
