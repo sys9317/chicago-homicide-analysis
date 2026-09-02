@@ -315,39 +315,71 @@ To understand *why* homicides concentrate in certain areas, we retrieve neighbor
 #| label: census-api
 #| code-summary: "Fetch median income, education, and poverty from Census API"
 
+census_key <- Sys.getenv("CENSUS_API_KEY")
+if (!nzchar(census_key)) {
+  stop("CENSUS_API_KEY is not set. Get a free key at https://api.census.gov/data/key_signup.html, ",
+       "click the activation link in the confirmation email, then put it in a .env file: ",
+       "CENSUS_API_KEY=your_key")
+}
+
 # Construct API query for Cook County (Chicago) census tracts
 api_url <- paste0(
   "https://api.census.gov/data/2019/acs/acs5",
   "?get=NAME,B19013_001E,B29002_007E,B29003_002E",
   "&for=tract:*",
   "&in=state:17&in=county:031",
-  "&key=", Sys.getenv("CENSUS_API_KEY")
+  "&key=", census_key
 )
 
-# Make request
 response <- GET(url = api_url)
-http_status(response)
-
-# Parse JSON response
 raw_data <- content(response, as = "text", encoding = "UTF-8")
-data_matrix <- fromJSON(raw_data)
 
-# Convert to tibble
-census_data <- as_tibble(data_matrix[2:nrow(data_matrix), ], .name_repair = "minimal")
-names(census_data) <- data_matrix[1, ]
-
-# Clean and rename columns
-census_data <- census_data |>
-  rename(
-    tract_name = NAME,
-    median_income = B19013_001E,
-    bachelor_degree = B29002_007E,
-    poverty_count = B29003_002E
-  ) |>
-  mutate(
-    across(c(median_income, bachelor_degree, poverty_count), as.numeric),
-    geoid10 = paste0(state, county, tract)
+# The Census API redirects an unactivated / invalid key to an HTML error page,
+# so guard the JSON parse and fall back to tidycensus for a transient hiccup.
+census_data <- tryCatch({
+  if (http_error(response) || !startsWith(trimws(raw_data), "[")) {
+    stop("Census API did not return JSON (HTTP ", status_code(response),
+         "). Most often this means the API key has not been activated yet.")
+  }
+  dm  <- fromJSON(raw_data)
+  out <- as_tibble(dm[2:nrow(dm), ], .name_repair = "minimal")
+  names(out) <- dm[1, ]
+  out |>
+    rename(
+      tract_name      = NAME,
+      median_income   = B19013_001E,
+      bachelor_degree = B29002_007E,
+      poverty_count   = B29003_002E
+    ) |>
+    mutate(
+      across(c(median_income, bachelor_degree, poverty_count), as.numeric),
+      geoid10 = paste0(state, county, tract)
+    )
+}, error = function(e) {
+  message("Raw API call failed (", conditionMessage(e), "); trying tidycensus::get_acs()...")
+  tryCatch(
+    get_acs(
+      geography = "tract", state = "IL", county = "Cook",
+      year = 2019, survey = "acs5", output = "wide",
+      variables = c(median_income = "B19013_001",
+                    bachelor_degree = "B29002_007",
+                    poverty_count = "B29003_002")
+    ) |>
+      transmute(
+        geoid10         = GEOID,
+        tract_name      = NAME,
+        median_income   = median_incomeE,
+        bachelor_degree = bachelor_degreeE,
+        poverty_count   = poverty_countE
+      ),
+    error = function(e2) stop(
+      "Both the raw Census API and tidycensus failed. This almost always means the ",
+      "CENSUS_API_KEY has not been activated yet: check your email from the U.S. Census ",
+      "Bureau and click the activation link, wait a few minutes, then re-render. (",
+      conditionMessage(e2), ")"
+    )
   )
+})
 
 glimpse(census_data)
 ```

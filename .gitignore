@@ -4,3 +4,5 @@
 .Rhistory
 .RData
 /.quarto/
+*_files/
+*.knit.md
