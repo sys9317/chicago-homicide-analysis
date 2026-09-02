@@ -67,20 +67,31 @@ census_api_key(Sys.getenv("CENSUS_API_KEY"), install = FALSE, overwrite = TRUE)
 
 ### Chicago Crime Data
 
-The raw dataset contains over 8 million reported crimes since 2001. For this analysis, we focus on homicides from the past 10 years with valid geocoordinates.
+The full "Crimes 2001 to Present" dataset holds over 8 million records. Rather than download the whole ~2&nbsp;GB file, this analysis pulls **only homicides from the last 10 years** directly from the Chicago Data Portal (Socrata API, dataset `ijzp-q8t2`), so the report is reproducible from a clean clone. If a local copy of the bulk CSV is present in `data/`, it is used instead.
 
 ```{r}
 #| label: load-crimes
-#| code-summary: "Load and clean Chicago crime data"
+#| code-summary: "Load Chicago homicide data (Socrata API, or local bulk CSV if present)"
 
-# Load crime data with explicit column types to handle coordinate parsing
-crimes <- read_csv(
-  "data/Crimes_-_2001_to_Present_20251020.csv",
-  col_types = cols(
-    Longitude = col_character(),
-    Latitude = col_character()
+local_csv <- "data/Crimes_-_2001_to_Present_20251020.csv"
+
+if (file.exists(local_csv)) {
+  crimes <- read_csv(
+    local_csv,
+    col_types = cols(Longitude = col_character(), Latitude = col_character())
   )
-)
+} else {
+  cutoff <- format(Sys.Date() - lubridate::years(10), "%Y-%m-%dT00:00:00")
+  where  <- utils::URLencode(
+    sprintf("primary_type='HOMICIDE' AND date > '%s'", cutoff),
+    reserved = TRUE
+  )
+  api_url <- sprintf(
+    "https://data.cityofchicago.org/resource/ijzp-q8t2.csv?$where=%s&$limit=100000",
+    where
+  )
+  crimes <- read_csv(api_url, show_col_types = FALSE)
+}
 
 # Standardize column names (lowercase, underscores)
 names(crimes) <- names(crimes) |>
@@ -95,7 +106,13 @@ names(crimes) <- names(crimes) |>
 #| code-summary: "Filter to homicides from the last 10 years with valid coordinates"
 
 crimes_lim <- crimes |>
-  mutate(date = mdy_hms(date)) |>
+  # `date` is "MM/DD/YYYY hh:mm:ss AM/PM" in the bulk CSV and ISO 8601 from the API
+  mutate(
+    date = date |>
+      str_replace("T", " ") |>
+      str_remove("\\.\\d+$") |>
+      lubridate::parse_date_time(orders = c("m/d/Y I:M:S p", "Y-m-d H:M:S"))
+  ) |>
   filter(
     date >= today(tz = "") - years(10),
     !is.na(latitude),

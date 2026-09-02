@@ -1,10 +1,6 @@
 .env
 .DS_Store
 *.csv
-*.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
 .Rhistory
 .RData
+/.quarto/
